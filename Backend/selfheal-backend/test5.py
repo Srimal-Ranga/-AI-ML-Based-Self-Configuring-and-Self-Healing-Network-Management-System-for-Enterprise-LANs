@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:5000"
+BASE = "http://127.0.0.1:5000"
 TRIALS = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 
 # (label, anomaly_type, confidence, expected decision)

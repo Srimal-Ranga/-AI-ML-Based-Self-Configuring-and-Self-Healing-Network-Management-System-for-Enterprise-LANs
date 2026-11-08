@@ -1,0 +1,201 @@
+case,kind,expected,decision,fix_succeeded,correct,time_ms
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,431.5
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,603.4
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,456.9
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,432.0
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,432.6
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,418.2
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,535.1
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,403.0
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,525.0
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,418.0
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,459.8
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,473.5
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,554.1
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,414.2
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,429.5
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,452.7
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,435.2
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,513.3
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,426.2
+"service_crash, high confidence",anomaly,auto_fix,auto_fix,True,True,467.8
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,417.7
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,651.6
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,433.8
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,650.5
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,708.8
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,434.9
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,675.7
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,442.4
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,487.6
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,477.2
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,581.7
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,474.4
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,675.5
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,570.2
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,601.3
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,709.5
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,537.2
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,594.2
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,474.9
+"link_congestion, high confidence",anomaly,auto_fix,auto_fix,True,True,441.0
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,608.3
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,500.0
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,610.3
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,582.7
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,508.3
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,497.2
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,650.6
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,533.1
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,513.7
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,667.5
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,508.6
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,506.3
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,568.2
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,681.5
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,744.4
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,600.3
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,592.9
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,600.5
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,787.9
+"suspicious_device, high confidence",anomaly,auto_fix,auto_fix,True,True,609.7
+"link_congestion, low confidence",anomaly,alert,alert,,True,361.7
+"link_congestion, low confidence",anomaly,alert,alert,,True,367.1
+"link_congestion, low confidence",anomaly,alert,alert,,True,444.5
+"link_congestion, low confidence",anomaly,alert,alert,,True,247.7
+"link_congestion, low confidence",anomaly,alert,alert,,True,371.5
+"link_congestion, low confidence",anomaly,alert,alert,,True,367.0
+"link_congestion, low confidence",anomaly,alert,alert,,True,326.8
+"link_congestion, low confidence",anomaly,alert,alert,,True,362.3
+"link_congestion, low confidence",anomaly,alert,alert,,True,364.9
+"link_congestion, low confidence",anomaly,alert,alert,,True,352.5
+"link_congestion, low confidence",anomaly,alert,alert,,True,279.4
+"link_congestion, low confidence",anomaly,alert,alert,,True,301.8
+"link_congestion, low confidence",anomaly,alert,alert,,True,350.3
+"link_congestion, low confidence",anomaly,alert,alert,,True,241.4
+"link_congestion, low confidence",anomaly,alert,alert,,True,256.7
+"link_congestion, low confidence",anomaly,alert,alert,,True,225.8
+"link_congestion, low confidence",anomaly,alert,alert,,True,361.6
+"link_congestion, low confidence",anomaly,alert,alert,,True,263.8
+"link_congestion, low confidence",anomaly,alert,alert,,True,270.8
+"link_congestion, low confidence",anomaly,alert,alert,,True,278.2
+"suspicious_device, low confidence",anomaly,alert,alert,,True,458.8
+"suspicious_device, low confidence",anomaly,alert,alert,,True,357.4
+"suspicious_device, low confidence",anomaly,alert,alert,,True,220.2
+"suspicious_device, low confidence",anomaly,alert,alert,,True,345.7
+"suspicious_device, low confidence",anomaly,alert,alert,,True,378.5
+"suspicious_device, low confidence",anomaly,alert,alert,,True,245.8
+"suspicious_device, low confidence",anomaly,alert,alert,,True,248.1
+"suspicious_device, low confidence",anomaly,alert,alert,,True,289.0
+"suspicious_device, low confidence",anomaly,alert,alert,,True,252.0
+"suspicious_device, low confidence",anomaly,alert,alert,,True,240.0
+"suspicious_device, low confidence",anomaly,alert,alert,,True,231.1
+"suspicious_device, low confidence",anomaly,alert,alert,,True,383.1
+"suspicious_device, low confidence",anomaly,alert,alert,,True,329.1
+"suspicious_device, low confidence",anomaly,alert,alert,,True,248.5
+"suspicious_device, low confidence",anomaly,alert,alert,,True,313.5
+"suspicious_device, low confidence",anomaly,alert,alert,,True,257.7
+"suspicious_device, low confidence",anomaly,alert,alert,,True,479.7
+"suspicious_device, low confidence",anomaly,alert,alert,,True,444.2
+"suspicious_device, low confidence",anomaly,alert,alert,,True,324.7
+"suspicious_device, low confidence",anomaly,alert,alert,,True,347.3
+unknown fault type,anomaly,alert,alert,,True,346.3
+unknown fault type,anomaly,alert,alert,,True,259.7
+unknown fault type,anomaly,alert,alert,,True,233.3
+unknown fault type,anomaly,alert,alert,,True,277.5
+unknown fault type,anomaly,alert,alert,,True,380.2
+unknown fault type,anomaly,alert,alert,,True,402.3
+unknown fault type,anomaly,alert,alert,,True,379.5
+unknown fault type,anomaly,alert,alert,,True,261.1
+unknown fault type,anomaly,alert,alert,,True,387.7
+unknown fault type,anomaly,alert,alert,,True,415.5
+unknown fault type,anomaly,alert,alert,,True,260.1
+unknown fault type,anomaly,alert,alert,,True,253.2
+unknown fault type,anomaly,alert,alert,,True,302.7
+unknown fault type,anomaly,alert,alert,,True,223.0
+unknown fault type,anomaly,alert,alert,,True,204.0
+unknown fault type,anomaly,alert,alert,,True,240.7
+unknown fault type,anomaly,alert,alert,,True,332.9
+unknown fault type,anomaly,alert,alert,,True,251.4
+unknown fault type,anomaly,alert,alert,,True,354.8
+unknown fault type,anomaly,alert,alert,,True,266.8
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,1036.6
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,934.7
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,808.7
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,896.6
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,1095.7
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,855.8
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,712.4
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,839.1
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,686.6
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,805.0
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,719.4
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,830.3
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,992.0
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,795.0
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,809.0
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,1016.4
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,698.4
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,833.9
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,825.3
+"prediction: high prob, soon",prediction,preventive_action,preventive_action,True,True,718.8
+prediction: medium prob,prediction,alert,alert,,True,369.8
+prediction: medium prob,prediction,alert,alert,,True,267.6
+prediction: medium prob,prediction,alert,alert,,True,285.7
+prediction: medium prob,prediction,alert,alert,,True,304.0
+prediction: medium prob,prediction,alert,alert,,True,281.9
+prediction: medium prob,prediction,alert,alert,,True,379.3
+prediction: medium prob,prediction,alert,alert,,True,276.9
+prediction: medium prob,prediction,alert,alert,,True,375.2
+prediction: medium prob,prediction,alert,alert,,True,253.7
+prediction: medium prob,prediction,alert,alert,,True,354.8
+prediction: medium prob,prediction,alert,alert,,True,249.9
+prediction: medium prob,prediction,alert,alert,,True,241.7
+prediction: medium prob,prediction,alert,alert,,True,481.8
+prediction: medium prob,prediction,alert,alert,,True,255.9
+prediction: medium prob,prediction,alert,alert,,True,362.5
+prediction: medium prob,prediction,alert,alert,,True,236.8
+prediction: medium prob,prediction,alert,alert,,True,292.3
+prediction: medium prob,prediction,alert,alert,,True,312.3
+prediction: medium prob,prediction,alert,alert,,True,373.4
+prediction: medium prob,prediction,alert,alert,,True,263.6
+"prediction: high prob, late",prediction,alert,alert,,True,246.0
+"prediction: high prob, late",prediction,alert,alert,,True,244.3
+"prediction: high prob, late",prediction,alert,alert,,True,241.2
+"prediction: high prob, late",prediction,alert,alert,,True,235.1
+"prediction: high prob, late",prediction,alert,alert,,True,259.5
+"prediction: high prob, late",prediction,alert,alert,,True,275.5
+"prediction: high prob, late",prediction,alert,alert,,True,258.9
+"prediction: high prob, late",prediction,alert,alert,,True,238.5
+"prediction: high prob, late",prediction,alert,alert,,True,252.9
+"prediction: high prob, late",prediction,alert,alert,,True,308.6
+"prediction: high prob, late",prediction,alert,alert,,True,289.6
+"prediction: high prob, late",prediction,alert,alert,,True,388.1
+"prediction: high prob, late",prediction,alert,alert,,True,252.7
+"prediction: high prob, late",prediction,alert,alert,,True,370.8
+"prediction: high prob, late",prediction,alert,alert,,True,300.7
+"prediction: high prob, late",prediction,alert,alert,,True,580.2
+"prediction: high prob, late",prediction,alert,alert,,True,311.8
+"prediction: high prob, late",prediction,alert,alert,,True,289.6
+"prediction: high prob, late",prediction,alert,alert,,True,257.7
+"prediction: high prob, late",prediction,alert,alert,,True,263.6
+prediction: low prob,prediction,store_only,store_only,,True,196.3
+prediction: low prob,prediction,store_only,store_only,,True,181.6
+prediction: low prob,prediction,store_only,store_only,,True,199.9
+prediction: low prob,prediction,store_only,store_only,,True,161.1
+prediction: low prob,prediction,store_only,store_only,,True,269.5
+prediction: low prob,prediction,store_only,store_only,,True,161.4
+prediction: low prob,prediction,store_only,store_only,,True,188.1
+prediction: low prob,prediction,store_only,store_only,,True,174.2
+prediction: low prob,prediction,store_only,store_only,,True,273.7
+prediction: low prob,prediction,store_only,store_only,,True,159.3
+prediction: low prob,prediction,store_only,store_only,,True,169.0
+prediction: low prob,prediction,store_only,store_only,,True,175.3
+prediction: low prob,prediction,store_only,store_only,,True,172.8
+prediction: low prob,prediction,store_only,store_only,,True,160.6
+prediction: low prob,prediction,store_only,store_only,,True,379.3
+prediction: low prob,prediction,store_only,store_only,,True,168.0
+prediction: low prob,prediction,store_only,store_only,,True,163.4
+prediction: low prob,prediction,store_only,store_only,,True,188.5
+prediction: low prob,prediction,store_only,store_only,,True,301.1
+prediction: low prob,prediction,store_only,store_only,,True,172.0
