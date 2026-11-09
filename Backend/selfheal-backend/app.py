@@ -7,10 +7,14 @@ Self-Healing Network Backend (Member 3)
 
 import os
 import time
+from functools import wraps
 
 import psycopg2
+from psycopg2 import errors as pg_errors
 from psycopg2.extras import RealDictCursor
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 
@@ -24,6 +28,11 @@ DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
     "port": int(os.getenv("DB_PORT", "5432")),
 }
+
+# Admin login (tokens). Set SECRET_KEY as an environment variable for real use.
+SECRET_KEY = os.getenv("SECRET_KEY", "change-this-secret-key")
+TOKEN_MAX_AGE = 8 * 60 * 60          # a login token lasts 8 hours
+serializer = URLSafeTimedSerializer(SECRET_KEY)
 
 # Self-healing rules: anomaly_type -> (action_type, minimum confidence)
 # Tune these numbers during testing.
@@ -119,6 +128,33 @@ def set_device_status(device_id, status, **extra):
 def get_device(device_id):
     rows = query("SELECT * FROM device WHERE device_id=%s;", (device_id,), fetch=True)
     return rows[0] if rows else None
+
+
+# ----------------------------------------------------------------------
+# ADMIN AUTHENTICATION
+# The dashboard logs in at POST /api/login, receives a token, and sends it
+# with every protected request:   Authorization: Bearer <token>
+# ----------------------------------------------------------------------
+def current_admin():
+    """Return {'admin_id', 'username'} if the request carries a valid token, else None."""
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+    try:
+        return serializer.loads(header[len("Bearer "):], max_age=TOKEN_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return None
+
+
+def admin_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        admin = current_admin()
+        if admin is None:
+            return jsonify({"error": "login required (missing or invalid token)"}), 401
+        g.admin = admin
+        return f(*args, **kwargs)
+    return wrapper
 
 
 # ----------------------------------------------------------------------
@@ -473,6 +509,56 @@ def list_predictions():
                          fetch=True))
 
 
+# ---- Admin accounts and login ----
+@app.route("/api/admin/register", methods=["POST"])
+def register_admin():
+    """Create an admin account.
+    The very first account can be created without logging in (first-time setup).
+    After that, only a logged-in admin can create more admins."""
+    d = request.get_json(silent=True) or {}
+    username = (d.get("username") or "").strip()
+    password = d.get("password") or ""
+    if not username or len(password) < 8:
+        return jsonify({"error": "username is required and password needs 8+ characters"}), 400
+
+    count = query("SELECT COUNT(*) AS n FROM admin_user;", fetch=True)[0]["n"]
+    if count > 0 and current_admin() is None:
+        return jsonify({"error": "only a logged-in admin can create more admins"}), 401
+
+    try:
+        rows = query(
+            """
+            INSERT INTO admin_user (username, password_hash, role)
+            VALUES (%s, %s, %s)
+            RETURNING admin_id, username, role;
+            """,
+            (username, generate_password_hash(password), d.get("role", "admin")),
+            fetch=True,
+        )
+    except pg_errors.UniqueViolation:
+        return jsonify({"error": "that username already exists"}), 409
+    return jsonify(rows[0]), 201
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    d = request.get_json(silent=True) or {}
+    username = (d.get("username") or "").strip()
+    password = d.get("password") or ""
+
+    rows = query(
+        "SELECT admin_id, username, password_hash, role FROM admin_user WHERE username=%s;",
+        (username,), fetch=True,
+    )
+    if not rows or not check_password_hash(rows[0]["password_hash"], password):
+        return jsonify({"error": "wrong username or password"}), 401
+
+    admin = rows[0]
+    token = serializer.dumps({"admin_id": admin["admin_id"], "username": admin["username"]})
+    return jsonify({"token": token, "username": admin["username"],
+                    "role": admin["role"], "expires_in_seconds": TOKEN_MAX_AGE})
+
+
 # ---- Actions log + manual override (dashboard) ----
 @app.route("/api/actions")
 def list_actions():
@@ -481,6 +567,7 @@ def list_actions():
 
 
 @app.route("/api/actions/<int:action_id>/undo", methods=["POST"])
+@admin_required
 def undo_action(action_id):
     rows = query("SELECT * FROM action WHERE action_id=%s;", (action_id,), fetch=True)
     if not rows:
@@ -502,13 +589,14 @@ def undo_action(action_id):
     else:
         return jsonify({"error": f"'{t}' actions cannot be undone"}), 400
 
-    finish_action(action_id, "undone", "undone by admin")
+    finish_action(action_id, "undone", f"undone by {g.admin['username']}")
     log_action(device_id, "undo", "admin", result="success",
-               notes=f"undid action {action_id} ({t})")
+               notes=f"undid action {action_id} ({t}) by {g.admin['username']}")
     return jsonify({"action_id": action_id, "result": "undone"})
 
 
 @app.route("/api/block-action", methods=["POST"])
+@admin_required
 def block_action():
     """Body: {"action_type": "isolate", "device_id": 5}  (device_id optional = all devices)"""
     d = request.get_json(silent=True)
@@ -516,11 +604,12 @@ def block_action():
         return jsonify({"error": "action_type is required"}), 400
     BLOCKED_ACTIONS.add((d.get("device_id"), d["action_type"]))
     log_action(d.get("device_id"), d["action_type"], "admin", result="blocked",
-               notes="auto-action blocked by admin")
+               notes=f"auto-action blocked by {g.admin['username']}")
     return jsonify({"blocked": sorted([[str(x), y] for x, y in BLOCKED_ACTIONS])})
 
 
 @app.route("/api/unblock-action", methods=["POST"])
+@admin_required
 def unblock_action():
     d = request.get_json(silent=True)
     if not d or "action_type" not in d:
@@ -530,6 +619,7 @@ def unblock_action():
 
 
 @app.route("/api/blocked-actions")
+@admin_required
 def list_blocked():
     return jsonify([{"device_id": x, "action_type": y} for x, y in BLOCKED_ACTIONS])
 

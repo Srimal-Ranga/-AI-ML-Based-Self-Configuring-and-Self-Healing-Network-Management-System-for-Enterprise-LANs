@@ -2,29 +2,33 @@
 TC-05: Self-healing engine test (Member 3)
 
 Sends many faults and predictions to the running API and measures:
-  - decision accuracy   (did the engine choose the right response?)
+  - decision accuracy     (did the engine choose the right response?)
   - recovery success rate (auto-fixes that succeeded / auto-fixes attempted)
-  - recovery time       (milliseconds from sending the fault to the fix finishing)
+  - recovery time         (milliseconds from sending the fault to the fix finishing)
 
 Uses only the Python standard library (no pip install needed).
 
-Before running:
-  1. Start the server:  python app.py
-  2. Restart the server first if you used /api/block-action (clears blocked actions)
+The undo and blocked-actions endpoints need an admin login, so set these first
+(PowerShell), using the admin account you created:
+    $env:TC05_USER="admin"
+    $env:TC05_PASS="your_admin_password"
+
 Run:
-  python tc05_test.py            (20 trials per case)
-  python tc05_test.py 30         (30 trials per case)
+    python test5.py            (20 trials per case)
+    python test5.py 5          (5 trials per case, quick check)
 """
 import csv
 import json
+import os
 import statistics
 import sys
 import time
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:5000"
+BASE = "http://127.0.0.1:5000"   # 127.0.0.1 avoids a ~2 second Windows 'localhost' delay
 TRIALS = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+TOKEN = None
 
 # (label, anomaly_type, confidence, expected decision)
 ANOMALY_CASES = [
@@ -47,10 +51,10 @@ PREDICTION_CASES = [
 
 def call(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        BASE + path, data=data, method=method,
-        headers={"Content-Type": "application/json"},
-    )
+    headers = {"Content-Type": "application/json"}
+    if TOKEN:
+        headers["Authorization"] = f"Bearer {TOKEN}"
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read().decode() or "{}")
@@ -63,6 +67,8 @@ def call(method, path, body=None):
 
 
 def main():
+    global TOKEN
+
     # --- Pre-checks -------------------------------------------------------
     try:
         status, _ = call("GET", "/api/health")
@@ -73,8 +79,22 @@ def main():
         print("Health check failed.")
         return
 
-    _, blocked = call("GET", "/api/blocked-actions")
-    if blocked:
+    user = os.getenv("TC05_USER")
+    password = os.getenv("TC05_PASS")
+    if not user or not password:
+        print("Admin login needed. In PowerShell, set these first:")
+        print('  $env:TC05_USER="admin"')
+        print('  $env:TC05_PASS="your_admin_password"')
+        return
+    status, resp = call("POST", "/api/login", {"username": user, "password": password})
+    if status != 200:
+        print("Login failed:", resp)
+        return
+    TOKEN = resp["token"]
+    print(f"Logged in as {resp['username']}")
+
+    status, blocked = call("GET", "/api/blocked-actions")
+    if status == 200 and blocked:
         print("Some actions are blocked, which would spoil the test:", blocked)
         print("Restart the server (Ctrl+C, then python app.py) and run this again.")
         return
