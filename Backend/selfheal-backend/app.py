@@ -5,8 +5,11 @@ Self-Healing Network Backend (Member 3)
 - Logs every action in the `action` table
 """
 
+import json
 import os
+import subprocess
 import time
+import urllib.request
 from functools import wraps
 
 import psycopg2
@@ -54,28 +57,72 @@ AUTO_CONFIG_MIN_CONF = 0.90     # classifier confidence needed to configure a de
                                 # Below this (or an unknown type) the device is quarantined
                                 # and the admin is asked to approve it.
 
+# ----------------------------------------------------------------------
+# NETWORK SETTINGS: DEFAULT VALUES (change these when you know the real network)
+# Everything about "how a new device gets configured" is in this one block.
+# ----------------------------------------------------------------------
+NETWORK_SETTINGS = {
+    # How configs are applied:
+    #   "simulate"   = only print and log (default: safe, nothing on the network changes)
+    #   "ssh"        = send VLAN commands to a switch (needs: python -m pip install netmiko)
+    #   "controller" = POST the config to an SDN controller's REST API (Ryu, ONOS, ...)
+    # Switch with:  $env:PUSH_MODE="ssh"   (or edit the default below)
+    "push_mode": os.getenv("PUSH_MODE", "simulate"),
+
+    # How to check a device after configuring it:  "none"  or  "ping"
+    "verify_mode": os.getenv("VERIFY_MODE", "none"),
+
+    # VLAN number for each device type (99 = quarantine)
+    "vlans": {"iot": 30, "laptop": 10, "printer": 40, "camera": 50, "phone": 60,
+              "server": 20, "router": 1, "switch": 10, "host": 10, "quarantine": 99},
+
+    # Addresses that appear inside the config templates (defaults, change later)
+    "gateway": "192.168.1.1",
+    "dns_servers": ["8.8.8.8", "8.8.4.4"],
+    "print_server": "192.168.1.50",
+    "video_recorder": "192.168.1.60",
+    "call_manager": "192.168.1.70",
+
+    # Used when push_mode = "ssh"
+    "ssh": {
+        "platform": "cisco_ios",                          # netmiko device type
+        "host": os.getenv("SWITCH_HOST", "192.168.1.2"),  # the switch to configure
+        "port": 22,
+        "username": os.getenv("SWITCH_USER", "admin"),
+        "password": os.getenv("SWITCH_PASSWORD", ""),     # never type the real password here
+        "default_port": "GigabitEthernet0/1",             # used if the sender gives no switch_port
+    },
+
+    # Used when push_mode = "controller"
+    "controller": {
+        "url": os.getenv("CONTROLLER_URL", "http://127.0.0.1:8080"),
+        "path": "/configure",
+        "timeout_seconds": 5,
+    },
+}
+
 # Config templates sent to new devices, by device_type.
-# (Vendor-neutral pseudo-config. {name} is replaced by the device name.
-#  Replace the text with real commands for your switches/controller later.)
+# (Vendor-neutral pseudo-config. These {placeholders} are filled from NETWORK_SETTINGS:
+#  {name} {vlan} {gateway} {dns} {print_server} {video_recorder} {call_manager})
 CONFIG_TEMPLATES = {
-    "iot":     "hostname {name}\nvlan 30\nport-mode access\nqos low-priority\n"
-               "acl IOT-ONLY permit gateway,dns deny internal-networks\n",
-    "laptop":  "hostname {name}\nvlan 10\nport-mode access\nqos normal\n"
+    "iot":     "hostname {name}\nvlan {vlan}\nport-mode access\nqos low-priority\n"
+               "acl IOT-ONLY permit {gateway},{dns} deny internal-networks\n",
+    "laptop":  "hostname {name}\nvlan {vlan}\nport-mode access\nqos normal\n"
                "acl CORPORATE permit internal,internet\n",
-    "printer": "hostname {name}\nvlan 40\nport-mode access\nqos normal\n"
-               "acl PRINTER permit print-servers deny internet\n",
-    "camera":  "hostname {name}\nvlan 50\nport-mode access\nqos high-bandwidth\n"
-               "acl CAMERA permit video-recorder deny internet\n",
-    "phone":   "hostname {name}\nvlan 60\nport-mode access\nqos voice-priority\n"
-               "acl VOICE permit call-manager\n",
-    "server":  "hostname {name}\nvlan 20\nport-mode access\nqos high\n"
+    "printer": "hostname {name}\nvlan {vlan}\nport-mode access\nqos normal\n"
+               "acl PRINTER permit {print_server} deny internet\n",
+    "camera":  "hostname {name}\nvlan {vlan}\nport-mode access\nqos high-bandwidth\n"
+               "acl CAMERA permit {video_recorder} deny internet\n",
+    "phone":   "hostname {name}\nvlan {vlan}\nport-mode access\nqos voice-priority\n"
+               "acl VOICE permit {call_manager}\n",
+    "server":  "hostname {name}\nvlan {vlan}\nport-mode access\nqos high\n"
                "acl SERVER permit internal\n",
     "router":  "hostname {name}\nip routing\nsnmp-server community public RO\n",
-    "switch":  "hostname {name}\nvlan 10\nspanning-tree mode rapid-pvst\n",
-    "host":    "dhcp enabled\ndns 8.8.8.8\n",
+    "switch":  "hostname {name}\nvlan {vlan}\nspanning-tree mode rapid-pvst\n",
+    "host":    "dhcp enabled\ndns {dns}\n",
 }
 # Used for devices the classifier is unsure about: isolated VLAN, DHCP and DNS only.
-QUARANTINE_TEMPLATE = ("hostname {name}\nvlan 99\nport-mode access\n"
+QUARANTINE_TEMPLATE = ("hostname {name}\nvlan {vlan}\nport-mode access\n"
                        "acl QUARANTINE permit dhcp,dns deny internal-networks,internet\n")
 
 # Other names the classifier might use for the same device type
@@ -107,14 +154,32 @@ def normalize_confidence(value):
     return max(0.0, min(1.0, c))
 
 
+def vlan_for(device_type, quarantine=False):
+    """VLAN number for a device type (quarantine VLAN for unknown types)."""
+    vlans = NETWORK_SETTINGS["vlans"]
+    if quarantine:
+        return vlans["quarantine"]
+    return vlans.get(normalize_type(device_type), vlans["quarantine"])
+
+
 def build_config(device, quarantine=False):
-    """Pick the config text for a device. Unknown types get the quarantine config."""
+    """Pick the config text for a device and fill in the default values.
+    Unknown types get the quarantine config."""
+    s = NETWORK_SETTINGS
     name = device.get("name") or f"device{device['device_id']}"
     template = QUARANTINE_TEMPLATE
     if not quarantine:
         template = CONFIG_TEMPLATES.get(normalize_type(device.get("device_type")),
                                         QUARANTINE_TEMPLATE)
-    return template.format(name=name)
+    return template.format(
+        name=name,
+        vlan=vlan_for(device.get("device_type"), quarantine),
+        gateway=s["gateway"],
+        dns=",".join(s["dns_servers"]),
+        print_server=s["print_server"],
+        video_recorder=s["video_recorder"],
+        call_manager=s["call_manager"],
+    )
 
 # Actions the admin has blocked: set of (device_id, action_type); device_id None = all devices
 # (kept in memory, so it resets when the server restarts)
@@ -249,18 +314,99 @@ def unisolate_device(device_id):
     return True
 
 
-def push_config(device, config_text):
-    # TODO: send the config to the device (DHCP / SSH / SDN controller)
+def build_switch_commands(device, quarantine=False):
+    """Default switch commands (Cisco IOS style) that put the device's port in its VLAN.
+    Add QoS / ACL commands here when you know your switch."""
+    s = NETWORK_SETTINGS
+    name = device.get("name") or f"device{device['device_id']}"
+    port = device.get("switch_port") or s["ssh"]["default_port"]
+    return [
+        f"interface {port}",
+        f"description {name}",
+        "switchport mode access",
+        f"switchport access vlan {vlan_for(device.get('device_type'), quarantine)}",
+        "no shutdown",
+    ]
+
+
+def _push_ssh(device, quarantine):
+    """push_mode = 'ssh': log in to the switch and apply the commands."""
+    try:
+        from netmiko import ConnectHandler
+    except ImportError:
+        print("[ERROR] netmiko is not installed. Run: python -m pip install netmiko")
+        return False
+    ssh = NETWORK_SETTINGS["ssh"]
+    commands = build_switch_commands(device, quarantine)
+    try:
+        with ConnectHandler(device_type=ssh["platform"], host=ssh["host"], port=ssh["port"],
+                            username=ssh["username"], password=ssh["password"]) as conn:
+            conn.send_config_set(commands)
+        print(f"[ACTION] switch {ssh['host']} configured: {commands}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] SSH push failed: {e}")
+        return False
+
+
+def _push_controller(device, config_text, quarantine):
+    """push_mode = 'controller': POST the device and its settings to the controller."""
+    c = NETWORK_SETTINGS["controller"]
+    payload = {
+        "device_id": device["device_id"],
+        "mac_address": device.get("mac_address"),
+        "ip_address": device.get("ip_address"),
+        "device_type": device.get("device_type"),
+        "vlan": vlan_for(device.get("device_type"), quarantine),
+        "switch_port": device.get("switch_port") or NETWORK_SETTINGS["ssh"]["default_port"],
+        "quarantine": quarantine,
+        "config": config_text,
+    }
+    req = urllib.request.Request(
+        c["url"] + c["path"], data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=c["timeout_seconds"]) as r:
+            ok = 200 <= r.status < 300
+        print(f"[ACTION] controller {c['url']} answered, configured={ok}")
+        return ok
+    except Exception as e:
+        print(f"[ERROR] controller push failed: {e}")
+        return False
+
+
+def push_config(device, config_text, quarantine=False):
+    """Apply the config to the network. Returns True on success.
+    The method is chosen by NETWORK_SETTINGS['push_mode'] (default: simulate)."""
+    mode = NETWORK_SETTINGS["push_mode"]
+    if mode == "ssh":
+        return _push_ssh(device, quarantine)
+    if mode == "controller":
+        return _push_controller(device, config_text, quarantine)
+    # default: simulate (prints only, nothing on the network changes)
     print(f"[ACTION] push config to device {device['device_id']}:\n{config_text}")
     time.sleep(0.2)
     return True
 
 
 def verify_device(device):
-    # TODO: confirm the config really took effect (ping the device, check the port VLAN,
-    #       read the running config). Returning False triggers a retry.
-    print(f"[ACTION] verify device {device['device_id']}")
-    return True
+    """Check the device after configuring it. Returning False triggers a retry.
+    verify_mode 'none' = skip (default), 'ping' = the device must answer a ping."""
+    if NETWORK_SETTINGS["verify_mode"] != "ping":
+        print(f"[ACTION] verify device {device['device_id']} (skipped)")
+        return True
+    ip = device.get("ip_address")
+    if not ip:
+        print(f"[ACTION] verify device {device['device_id']}: no IP address to ping, skipped")
+        return True
+    cmd = (["ping", "-n", "1", "-w", "2000", ip] if os.name == "nt"
+           else ["ping", "-c", "1", "-W", "2", ip])
+    try:
+        ok = subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        ok = False
+    print(f"[ACTION] verify device {device['device_id']}: ping {ip} -> {'ok' if ok else 'FAILED'}")
+    return ok
 
 
 ACTION_FUNCTIONS = {
@@ -317,7 +463,7 @@ def quarantine_device(device, device_type, confidence):
 
     config_text = build_config(device, quarantine=True)
     action_id = log_action(device_id, "provision", "auto")
-    if push_config(device, config_text):
+    if push_config(device, config_text, quarantine=True):
         query("UPDATE device SET status='quarantined', config_applied=%s WHERE device_id=%s;",
               (config_text, device_id))
         finish_action(action_id, "success", f"quarantined: {why}")
@@ -501,6 +647,7 @@ def device_discovered():
         fetch=True,
     )
     device = rows[0]
+    device["switch_port"] = data.get("switch_port")   # optional: which switch port it is on
 
     outcome = {}
     if device["status"] in ("discovered", "failed", "quarantined"):
