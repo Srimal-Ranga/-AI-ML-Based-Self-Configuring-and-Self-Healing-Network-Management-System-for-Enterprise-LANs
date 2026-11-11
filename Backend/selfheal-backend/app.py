@@ -48,16 +48,73 @@ PRED_ACT_MAX_MINUTES = 30       # ... if failure is expected within this many mi
 PRED_ALERT_PROBABILITY = 0.70   # alert the admin at or above this
 
 # Provisioning
-AUTO_PROVISION = True           # False = unknown devices only raise an alert
+AUTO_PROVISION = True           # False = new devices only raise an alert
 MAX_PROVISION_RETRIES = 3
+AUTO_CONFIG_MIN_CONF = 0.90     # classifier confidence needed to configure a device automatically.
+                                # Below this (or an unknown type) the device is quarantined
+                                # and the admin is asked to approve it.
 
-# Config templates sent to new devices, by device_type
+# Config templates sent to new devices, by device_type.
+# (Vendor-neutral pseudo-config. {name} is replaced by the device name.
+#  Replace the text with real commands for your switches/controller later.)
 CONFIG_TEMPLATES = {
-    "router": "hostname {name}\nip routing\nsnmp-server community public RO\n",
-    "switch": "hostname {name}\nvlan 10\nspanning-tree mode rapid-pvst\n",
-    "host":   "dhcp enabled\ndns 8.8.8.8\n",
+    "iot":     "hostname {name}\nvlan 30\nport-mode access\nqos low-priority\n"
+               "acl IOT-ONLY permit gateway,dns deny internal-networks\n",
+    "laptop":  "hostname {name}\nvlan 10\nport-mode access\nqos normal\n"
+               "acl CORPORATE permit internal,internet\n",
+    "printer": "hostname {name}\nvlan 40\nport-mode access\nqos normal\n"
+               "acl PRINTER permit print-servers deny internet\n",
+    "camera":  "hostname {name}\nvlan 50\nport-mode access\nqos high-bandwidth\n"
+               "acl CAMERA permit video-recorder deny internet\n",
+    "phone":   "hostname {name}\nvlan 60\nport-mode access\nqos voice-priority\n"
+               "acl VOICE permit call-manager\n",
+    "server":  "hostname {name}\nvlan 20\nport-mode access\nqos high\n"
+               "acl SERVER permit internal\n",
+    "router":  "hostname {name}\nip routing\nsnmp-server community public RO\n",
+    "switch":  "hostname {name}\nvlan 10\nspanning-tree mode rapid-pvst\n",
+    "host":    "dhcp enabled\ndns 8.8.8.8\n",
 }
-DEFAULT_TEMPLATE = "hostname {name}\n"
+# Used for devices the classifier is unsure about: isolated VLAN, DHCP and DNS only.
+QUARANTINE_TEMPLATE = ("hostname {name}\nvlan 99\nport-mode access\n"
+                       "acl QUARANTINE permit dhcp,dns deny internal-networks,internet\n")
+
+# Other names the classifier might use for the same device type
+TYPE_ALIASES = {
+    "iot_device": "iot", "sensor": "iot",
+    "pc": "laptop", "computer": "laptop", "desktop": "laptop",
+    "ip_camera": "camera", "ip_phone": "phone",
+}
+
+
+def normalize_type(label):
+    """'IoT' / 'iot device' / ' Laptop ' -> 'iot' / 'iot' / 'laptop'. Returns None if empty."""
+    if not label:
+        return None
+    t = str(label).strip().lower().replace("-", "_").replace(" ", "_")
+    return TYPE_ALIASES.get(t, t)
+
+
+def normalize_confidence(value):
+    """Accepts 0.99 or 99 (percent). None stays None. Unreadable values count as 0."""
+    if value is None:
+        return None
+    try:
+        c = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if c > 1:
+        c = c / 100.0
+    return max(0.0, min(1.0, c))
+
+
+def build_config(device, quarantine=False):
+    """Pick the config text for a device. Unknown types get the quarantine config."""
+    name = device.get("name") or f"device{device['device_id']}"
+    template = QUARANTINE_TEMPLATE
+    if not quarantine:
+        template = CONFIG_TEMPLATES.get(normalize_type(device.get("device_type")),
+                                        QUARANTINE_TEMPLATE)
+    return template.format(name=name)
 
 # Actions the admin has blocked: set of (device_id, action_type); device_id None = all devices
 # (kept in memory, so it resets when the server restarts)
@@ -199,6 +256,13 @@ def push_config(device, config_text):
     return True
 
 
+def verify_device(device):
+    # TODO: confirm the config really took effect (ping the device, check the port VLAN,
+    #       read the running config). Returning False triggers a retry.
+    print(f"[ACTION] verify device {device['device_id']}")
+    return True
+
+
 ACTION_FUNCTIONS = {
     "restart": restart_service,
     "reroute": reroute_traffic,
@@ -236,26 +300,78 @@ def send_alert_to_admin(device_id, message, anomaly_id=None, prediction_id=None)
 # ----------------------------------------------------------------------
 # WORKFLOW A: NEW DEVICE AUTO-CONNECT (provisioning)
 # ----------------------------------------------------------------------
-def handle_new_device(device):
+def quarantine_device(device, device_type, confidence):
+    """Put an unrecognised / low-confidence device on the isolated quarantine config
+    and ask the admin to approve it."""
+    device_id = device["device_id"]
+
+    if device["status"] == "quarantined":     # already quarantined: don't repeat or re-alert
+        return {"provisioned": False, "quarantined": True,
+                "reason": "still quarantined, waiting for admin approval"}
+
+    if device_type not in CONFIG_TEMPLATES:
+        why = f"unknown device type '{device_type or 'not provided'}'"
+    else:
+        why = (f"low classifier confidence ({confidence:.2f}, "
+               f"needs {AUTO_CONFIG_MIN_CONF:.2f})")
+
+    config_text = build_config(device, quarantine=True)
+    action_id = log_action(device_id, "provision", "auto")
+    if push_config(device, config_text):
+        query("UPDATE device SET status='quarantined', config_applied=%s WHERE device_id=%s;",
+              (config_text, device_id))
+        finish_action(action_id, "success", f"quarantined: {why}")
+        send_alert_to_admin(
+            device_id,
+            f"New device quarantined ({why}). "
+            f"Approve with POST /api/device/{device_id}/approve")
+        return {"provisioned": False, "quarantined": True, "reason": why}
+
+    set_device_status(device_id, "failed")
+    finish_action(action_id, "fail", "could not apply quarantine config")
+    send_alert_to_admin(device_id, "Could not quarantine new device")
+    return {"provisioned": False, "reason": "quarantine failed"}
+
+
+def handle_new_device(device, confidence=None, approved_by=None):
+    """Zero-touch provisioning decision for a newly discovered device.
+
+    confidence  = classifier confidence 0-1 (None if the sender gave none).
+    approved_by = admin username when an admin approved the device by hand.
+
+      confident + known type  -> push that type's config, verify, status 'active'
+      low confidence / unknown -> quarantine config, status 'quarantined', alert admin
+    """
     device_id = device["device_id"]
 
     if device["status"] == "active":
         return {"provisioned": False, "reason": "already active"}
 
-    if not AUTO_PROVISION or is_blocked(device_id, "provision"):
+    if approved_by is None and (not AUTO_PROVISION or is_blocked(device_id, "provision")):
         send_alert_to_admin(device_id, "New device needs manual approval")
         return {"provisioned": False, "reason": "waiting for admin approval"}
 
-    set_device_status(device_id, "provisioning")
-    template = CONFIG_TEMPLATES.get(device.get("device_type"), DEFAULT_TEMPLATE)
-    config_text = template.format(name=device.get("name") or f"device{device_id}")
+    device_type = normalize_type(device.get("device_type"))
+    trusted = (device_type in CONFIG_TEMPLATES
+               and (confidence is None or confidence >= AUTO_CONFIG_MIN_CONF))
+    if not trusted:
+        return quarantine_device(device, device_type, confidence)
 
-    action_id = log_action(device_id, "provision", "auto")
+    set_device_status(device_id, "provisioning")
+    config_text = build_config(device)
+
+    label = f"provisioned as {device_type}"
+    if confidence is not None:
+        label += f" (confidence {confidence:.2f})"
+    if approved_by:
+        label += f", approved by {approved_by}"
+
+    action_id = log_action(device_id, "provision", "auto" if not approved_by else "admin")
     for attempt in range(1, MAX_PROVISION_RETRIES + 1):
-        if push_config(device, config_text):
+        if push_config(device, config_text) and verify_device(device):
             set_device_status(device_id, "active", provisioned=True, config=config_text)
-            finish_action(action_id, "success", f"provisioned on attempt {attempt}")
-            return {"provisioned": True, "attempts": attempt}
+            finish_action(action_id, "success", f"{label}, attempt {attempt}")
+            return {"provisioned": True, "device_type": device_type, "attempts": attempt}
 
     set_device_status(device_id, "failed")
     finish_action(action_id, "fail", f"failed after {MAX_PROVISION_RETRIES} attempts")
@@ -366,37 +482,69 @@ def device_discovered():
     if not data or "mac_address" not in data:
         return jsonify({"error": "mac_address is required"}), 400
 
+    # The classifier's answer: device_type (e.g. "IoT") and confidence (0.99 or 99)
+    device_type = normalize_type(data.get("device_type"))
+    confidence = normalize_confidence(data.get("confidence"))
+
     rows = query(
         """
         INSERT INTO device (mac_address, name, ip_address, device_type)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (mac_address)
-        DO UPDATE SET ip_address = COALESCE(EXCLUDED.ip_address, device.ip_address)
+        DO UPDATE SET
+            ip_address  = COALESCE(EXCLUDED.ip_address, device.ip_address),
+            device_type = CASE WHEN device.status = 'active' THEN device.device_type
+                               ELSE COALESCE(EXCLUDED.device_type, device.device_type) END
         RETURNING *;
         """,
-        (data["mac_address"], data.get("name"), data.get("ip_address"),
-         data.get("device_type")),
+        (data["mac_address"], data.get("name"), data.get("ip_address"), device_type),
         fetch=True,
     )
     device = rows[0]
 
     outcome = {}
-    if device["status"] in ("discovered", "failed"):
-        outcome = handle_new_device(device)
+    if device["status"] in ("discovered", "failed", "quarantined"):
+        outcome = handle_new_device(device, confidence)
         device = get_device(device["device_id"])
 
     return jsonify({"device_id": device["device_id"], "status": device["status"],
+                    "device_type": device["device_type"],
                     "provisioning": outcome}), 201
 
 
 @app.route("/api/device/<int:device_id>/config")
 def device_config(device_id):
+    """The config this device should get (Member 1 can use it to push the config)."""
     device = get_device(device_id)
     if not device:
         return jsonify({"error": "device not found"}), 404
-    template = CONFIG_TEMPLATES.get(device["device_type"], DEFAULT_TEMPLATE)
-    config_text = template.format(name=device["name"] or f"device{device_id}")
-    return jsonify({"device_id": device_id, "config": config_text})
+    return jsonify({"device_id": device_id, "device_type": device["device_type"],
+                    "config": build_config(device)})
+
+
+@app.route("/api/device/<int:device_id>/approve", methods=["POST"])
+@admin_required
+def approve_device(device_id):
+    """Admin approves a quarantined device.
+    Optional body {"device_type": "laptop"} corrects the classifier's answer first."""
+    device = get_device(device_id)
+    if not device:
+        return jsonify({"error": "device not found"}), 404
+    if device["status"] not in ("discovered", "quarantined", "failed"):
+        return jsonify({"error": f"device is '{device['status']}', nothing to approve"}), 400
+
+    d = request.get_json(silent=True) or {}
+    new_type = normalize_type(d.get("device_type")) or normalize_type(device["device_type"])
+    if new_type not in CONFIG_TEMPLATES:
+        return jsonify({"error": "send a valid device_type",
+                        "allowed": sorted(CONFIG_TEMPLATES)}), 400
+
+    query("UPDATE device SET device_type=%s WHERE device_id=%s;", (new_type, device_id))
+    device = get_device(device_id)
+    outcome = handle_new_device(device, confidence=1.0, approved_by=g.admin["username"])
+    device = get_device(device_id)
+    return jsonify({"device_id": device_id, "status": device["status"],
+                    "device_type": device["device_type"], "provisioning": outcome})
 
 
 @app.route("/api/device/<int:device_id>/provisioned", methods=["POST"])
