@@ -10,26 +10,94 @@ import os
 import subprocess
 import time
 import urllib.request
+from datetime import datetime, timezone
 from functools import wraps
 
-import psycopg2
-from psycopg2 import errors as pg_errors
-from psycopg2.extras import RealDictCursor
+# Database driver. psycopg2 is used when it loads. If Windows blocks it
+# ("Application Control policy has blocked this file"), the pure-Python
+# driver pg8000 is used instead, so no compiled file is needed.
+try:
+    import psycopg2
+    from psycopg2 import errors as pg_errors
+    from psycopg2.extras import RealDictCursor
+    DRIVER = "psycopg2"
+except ImportError as _driver_error:
+    try:
+        import pg8000.dbapi as pg8000_dbapi
+    except ImportError:
+        raise SystemExit(
+            "No database driver could be loaded (psycopg2 failed: %s).\n"
+            "Run:  python -m pip install pg8000" % _driver_error)
+
+    class _ForeignKeyViolation(Exception):
+        pass
+
+    class _UniqueViolation(Exception):
+        pass
+
+    class pg_errors:                      # same names that psycopg2.errors uses
+        ForeignKeyViolation = _ForeignKeyViolation
+        UniqueViolation = _UniqueViolation
+
+    DRIVER = "pg8000"
 from flask import Flask, g, jsonify, request
+from flask.json.provider import DefaultJSONProvider
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
+
+class IsoJSONProvider(DefaultJSONProvider):
+    """Send every time to clients as ISO 8601 in UTC, e.g. 2026-11-15T04:19:53.123Z"""
+    def default(self, o):
+        if isinstance(o, datetime):
+            if o.tzinfo is None:                      # the database stores UTC (see DB_CONFIG)
+                o = o.replace(tzinfo=timezone.utc)
+            return o.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return super().default(o)
+
+
 app = Flask(__name__)
+app.json = IsoJSONProvider(app)
+
+# Let a browser dashboard (Member 1) on another address call this API.
+try:
+    from flask_cors import CORS
+    CORS(app)
+except ImportError:
+    print("[WARNING] flask-cors is not installed, so a browser dashboard cannot call this API.")
+    print("          Run:  python -m pip install flask-cors")
 
 # ----------------------------------------------------------------------
 # CONFIG  (change the password, or set the DB_PASSWORD environment variable)
 # ----------------------------------------------------------------------
+def load_env_file():
+    """Read settings from a file called .env next to app.py (lines like DB_PASSWORD=abc).
+    A value already set in PowerShell wins over the file."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key, value = key.strip(), value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
+    except OSError:
+        pass                                  # no .env file: that is fine
+
+
+load_env_file()
+
 DB_CONFIG = {
     "dbname": os.getenv("DB_NAME", "selfheal_db"),
     "user": os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASSWORD", "YOUR_PASSWORD"),
+    "password": os.getenv("DB_PASSWORD", "DB_PASSWORD"),
     "host": os.getenv("DB_HOST", "localhost"),
     "port": int(os.getenv("DB_PORT", "5432")),
+    "options": "-c timezone=UTC",     # all times are stored and returned in UTC
 }
 
 # Admin login (tokens). Set SECRET_KEY as an environment variable for real use.
@@ -190,16 +258,48 @@ BLOCKED_ACTIONS = set()
 # DATABASE HELPERS
 # ----------------------------------------------------------------------
 def get_conn():
-    return psycopg2.connect(**DB_CONFIG)
+    if DRIVER == "psycopg2":
+        return psycopg2.connect(**DB_CONFIG)
+    conn = pg8000_dbapi.connect(
+        user=DB_CONFIG["user"], password=DB_CONFIG["password"],
+        host=DB_CONFIG["host"], port=DB_CONFIG["port"],
+        database=DB_CONFIG["dbname"])
+    cur = conn.cursor()
+    cur.execute("SET TIME ZONE 'UTC'")      # all times are stored and returned in UTC
+    cur.close()
+    return conn
+
+
+def _pg8000_code(error):
+    """The 5-character PostgreSQL error code inside a pg8000 error."""
+    info = error.args[0] if error.args else None
+    return info.get("C") if isinstance(info, dict) else None
 
 
 def query(sql, params=None, fetch=False):
     """Run one SQL command. Returns a list of rows when fetch=True."""
     conn = get_conn()
     try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute(sql, params)
-        rows = cur.fetchall() if fetch else None
+        if DRIVER == "psycopg2":
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(sql, params)
+            rows = cur.fetchall() if fetch else None
+            conn.commit()
+            return rows
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, params or ())
+        except pg8000_dbapi.DatabaseError as e:
+            code = _pg8000_code(e)
+            if code == "23503":
+                raise pg_errors.ForeignKeyViolation(str(e))
+            if code == "23505":
+                raise pg_errors.UniqueViolation(str(e))
+            raise
+        rows = None
+        if fetch:
+            names = [c[0] for c in cur.description]
+            rows = [dict(zip(names, r)) for r in cur.fetchall()]
         conn.commit()
         return rows
     finally:
@@ -216,7 +316,7 @@ def log_action(device_id, action_type, triggered_by="auto", anomaly_id=None,
             (device_id, anomaly_id, prediction_id, action_type, triggered_by,
              result, notes, finished_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s,
-                CASE WHEN %s IS NULL THEN NULL ELSE NOW() END)
+                CASE WHEN %s::text IS NULL THEN NULL ELSE NOW() END)
         RETURNING action_id;
         """,
         (device_id, anomaly_id, prediction_id, action_type, triggered_by,
@@ -250,6 +350,47 @@ def set_device_status(device_id, status, **extra):
 def get_device(device_id):
     rows = query("SELECT * FROM device WHERE device_id=%s;", (device_id,), fetch=True)
     return rows[0] if rows else None
+
+
+def as_int(value):
+    """Convert to int, or return None if it is not a whole number (so bad input is a 400, not a 500)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def list_rows(table, order_sql, filters, fixed_where=None):
+    """Return rows of one table as a JSON list, for the dashboard.
+
+    filters     = {"query-string-name": ("column", is_integer)}  (whitelisted, so no SQL injection)
+    fixed_where = an extra condition that is always applied, e.g. "action_type = 'alert'"
+    The caller can also pass ?limit=N (default 100, maximum 500).
+    """
+    where, params = [], []
+    if fixed_where:
+        where.append(fixed_where)
+    for arg, (column, is_int) in filters.items():
+        value = request.args.get(arg)
+        if value is None:
+            continue
+        if is_int:
+            value = as_int(value)
+            if value is None:
+                return jsonify({"error": f"{arg} must be a whole number"}), 400
+        where.append(f"{column} = %s")
+        params.append(value)
+
+    limit = as_int(request.args.get("limit"))
+    limit = 100 if limit is None else max(1, min(limit, 500))
+
+    sql = f"SELECT * FROM {table}"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" ORDER BY {order_sql} LIMIT %s;"
+    return jsonify(query(sql, tuple(params) + (limit,), fetch=True))
 
 
 # ----------------------------------------------------------------------
@@ -714,7 +855,29 @@ def device_provisioned(device_id):
 
 @app.route("/api/devices")
 def list_devices():
-    return jsonify(query("SELECT * FROM device ORDER BY device_id;", fetch=True))
+    """All devices. Optional filters: ?status=quarantined  ?device_type=iot  ?limit=50"""
+    return list_rows("device", "device_id ASC",
+                     {"status": ("status", False), "device_type": ("device_type", False)})
+
+
+@app.route("/api/devices/<int:device_id>")
+def device_detail(device_id):
+    """One device with its latest metrics, anomalies, predictions and actions (dashboard detail page)."""
+    device = get_device(device_id)
+    if not device:
+        return jsonify({"error": f"device {device_id} not found"}), 404
+
+    def latest(table, order_col, n):
+        return query(f"SELECT * FROM {table} WHERE device_id=%s ORDER BY {order_col} DESC LIMIT %s;",
+                     (device_id, n), fetch=True)
+
+    return jsonify({
+        "device": device,
+        "latest_metrics": latest("traffic_log", "timestamp", 1),
+        "recent_anomalies": latest("anomaly", "detected_at", 10),
+        "recent_predictions": latest("prediction", "predicted_at", 10),
+        "recent_actions": latest("action", "started_at", 10),
+    })
 
 
 # ---- Metrics (performance data for prediction) ----
@@ -723,26 +886,34 @@ def receive_metrics():
     d = request.get_json(silent=True)
     if not d or "device_id" not in d:
         return jsonify({"error": "device_id is required"}), 400
-    rows = query(
-        """
-        INSERT INTO traffic_log
-            (device_id, bytes_in, bytes_out, packet_loss, latency_ms,
-             cpu_usage, memory_usage, temperature)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        RETURNING log_id;
-        """,
-        (d["device_id"], d.get("bytes_in"), d.get("bytes_out"), d.get("packet_loss"),
-         d.get("latency_ms"), d.get("cpu_usage"), d.get("memory_usage"),
-         d.get("temperature")),
-        fetch=True,
-    )
+    device_id = as_int(d["device_id"])
+    if device_id is None:
+        return jsonify({"error": "device_id must be a whole number"}), 400
+    try:
+        rows = query(
+            """
+            INSERT INTO traffic_log
+                (device_id, bytes_in, bytes_out, packet_loss, latency_ms,
+                 cpu_usage, memory_usage, temperature)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING log_id;
+            """,
+            (device_id, d.get("bytes_in"), d.get("bytes_out"), d.get("packet_loss"),
+             d.get("latency_ms"), d.get("cpu_usage"), d.get("memory_usage"),
+             d.get("temperature")),
+            fetch=True,
+        )
+    except pg_errors.ForeignKeyViolation:
+        return jsonify({"error": f"device {device_id} not found"}), 404
     return jsonify(rows[0]), 201
 
 
 @app.route("/api/metrics/<int:device_id>")
 def get_metrics(device_id):
-    """Recent metrics for one device (Member 2 can use this for prediction)."""
-    limit = min(int(request.args.get("limit", 100)), 1000)
+    """Recent metrics for one device, newest first (Member 2 can use this for training).
+    ?limit=N  (default 100, maximum 1000)"""
+    limit = as_int(request.args.get("limit"))
+    limit = 100 if limit is None else max(1, min(limit, 1000))
     return jsonify(query(
         "SELECT * FROM traffic_log WHERE device_id=%s ORDER BY timestamp DESC LIMIT %s;",
         (device_id, limit), fetch=True))
@@ -754,24 +925,39 @@ def receive_anomaly():
     d = request.get_json(silent=True)
     if not d or "device_id" not in d or "anomaly_type" not in d:
         return jsonify({"error": "device_id and anomaly_type are required"}), 400
+    device_id = as_int(d["device_id"])
+    if device_id is None:
+        return jsonify({"error": "device_id must be a whole number"}), 400
+    anomaly_type = str(d["anomaly_type"]).strip()
+    if not anomaly_type or len(anomaly_type) > 50:
+        return jsonify({"error": "anomaly_type must be 1 to 50 characters"}), 400
 
-    rows = query(
-        """
-        INSERT INTO anomaly (device_id, anomaly_type, confidence)
-        VALUES (%s, %s, %s)
-        RETURNING anomaly_id, device_id, anomaly_type, confidence;
-        """,
-        (d["device_id"], d["anomaly_type"], d.get("confidence", 0.0)),
-        fetch=True,
-    )
+    # Accept 0.92 or 92 (percent); a missing value counts as 0 so nothing risky runs by accident
+    confidence = normalize_confidence(d.get("confidence"))
+    confidence = 0.0 if confidence is None else confidence
+
+    try:
+        rows = query(
+            """
+            INSERT INTO anomaly (device_id, anomaly_type, confidence)
+            VALUES (%s, %s, %s)
+            RETURNING anomaly_id, device_id, anomaly_type, confidence;
+            """,
+            (device_id, anomaly_type, confidence),
+            fetch=True,
+        )
+    except pg_errors.ForeignKeyViolation:
+        return jsonify({"error": f"device {device_id} not found"}), 404
     outcome = handle_anomaly(rows[0])
     return jsonify({"anomaly_id": rows[0]["anomaly_id"], "result": outcome}), 201
 
 
 @app.route("/api/anomalies")
 def list_anomalies():
-    return jsonify(query("SELECT * FROM anomaly ORDER BY detected_at DESC LIMIT 100;",
-                         fetch=True))
+    """Anomalies, newest first. Filters: ?device_id=2  ?status=alerted  ?anomaly_type=service_crash  ?limit=50"""
+    return list_rows("anomaly", "detected_at DESC",
+                     {"device_id": ("device_id", True), "status": ("status", False),
+                      "anomaly_type": ("anomaly_type", False)})
 
 
 # ---- Predictions (Goal 3: predict failures) ----
@@ -780,28 +966,45 @@ def receive_prediction():
     d = request.get_json(silent=True)
     if not d or "device_id" not in d:
         return jsonify({"error": "device_id is required"}), 400
+    device_id = as_int(d["device_id"])
+    if device_id is None:
+        return jsonify({"error": "device_id must be a whole number"}), 400
+    issue = str(d.get("predicted_issue") or "unknown").strip()
+    if len(issue) > 50:
+        return jsonify({"error": "predicted_issue must be at most 50 characters"}), 400
 
-    rows = query(
-        """
-        INSERT INTO prediction
-            (device_id, predicted_issue, failure_probability,
-             estimated_time_to_failure_min)
-        VALUES (%s, %s, %s, %s)
-        RETURNING prediction_id, device_id, predicted_issue,
-                  failure_probability, estimated_time_to_failure_min;
-        """,
-        (d["device_id"], d.get("predicted_issue", "unknown"),
-         d.get("failure_probability", 0.0), d.get("estimated_time_to_failure_min")),
-        fetch=True,
-    )
+    probability = normalize_confidence(d.get("failure_probability"))      # 0.95 or 95 (percent)
+    probability = 0.0 if probability is None else probability
+    minutes = d.get("estimated_time_to_failure_min")
+    if minutes is not None:
+        minutes = as_int(minutes)
+        if minutes is None:
+            return jsonify({"error": "estimated_time_to_failure_min must be a whole number"}), 400
+
+    try:
+        rows = query(
+            """
+            INSERT INTO prediction
+                (device_id, predicted_issue, failure_probability,
+                 estimated_time_to_failure_min)
+            VALUES (%s, %s, %s, %s)
+            RETURNING prediction_id, device_id, predicted_issue,
+                      failure_probability, estimated_time_to_failure_min;
+            """,
+            (device_id, issue, probability, minutes),
+            fetch=True,
+        )
+    except pg_errors.ForeignKeyViolation:
+        return jsonify({"error": f"device {device_id} not found"}), 404
     outcome = handle_prediction(rows[0])
     return jsonify({"prediction_id": rows[0]["prediction_id"], "result": outcome}), 201
 
 
 @app.route("/api/predictions")
 def list_predictions():
-    return jsonify(query("SELECT * FROM prediction ORDER BY predicted_at DESC LIMIT 100;",
-                         fetch=True))
+    """Predictions, newest first. Filters: ?device_id=2  ?limit=50"""
+    return list_rows("prediction", "predicted_at DESC",
+                     {"device_id": ("device_id", True)})
 
 
 # ---- Admin accounts and login ----
@@ -857,8 +1060,56 @@ def login():
 # ---- Actions log + manual override (dashboard) ----
 @app.route("/api/actions")
 def list_actions():
-    return jsonify(query("SELECT * FROM action ORDER BY started_at DESC LIMIT 100;",
-                         fetch=True))
+    """Every action the engine or an admin did, newest first.
+    Filters: ?device_id=2  ?action_type=isolate  ?result=fail  ?triggered_by=admin  ?limit=50"""
+    return list_rows("action", "started_at DESC",
+                     {"device_id": ("device_id", True), "action_type": ("action_type", False),
+                      "result": ("result", False), "triggered_by": ("triggered_by", False)})
+
+
+@app.route("/api/alerts")
+def list_alerts():
+    """Only the alerts for the admin, newest first. Filter: ?device_id=2  ?limit=50"""
+    return list_rows("action", "started_at DESC", {"device_id": ("device_id", True)},
+                     fixed_where="action_type = 'alert'")
+
+
+@app.route("/api/summary")
+def summary():
+    """Numbers for the dashboard home page."""
+    by_status = {r["status"]: r["n"] for r in query(
+        "SELECT status, COUNT(*) AS n FROM device GROUP BY status;", fetch=True)}
+
+    recent = query(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM anomaly    WHERE detected_at > NOW() - INTERVAL '24 hours') AS anomalies,
+          (SELECT COUNT(*) FROM prediction WHERE predicted_at > NOW() - INTERVAL '24 hours') AS predictions,
+          (SELECT COUNT(*) FROM action     WHERE action_type = 'alert'
+                                             AND started_at > NOW() - INTERVAL '24 hours') AS alerts;
+        """, fetch=True)[0]
+
+    fixes = query(
+        """
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE result IN ('success', 'undone')) AS succeeded,
+               ROUND(AVG(EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000)::numeric, 1)::float AS avg_ms
+        FROM action
+        WHERE action_type IN ('restart', 'reroute', 'isolate', 'preventive')
+          AND result IN ('success', 'fail', 'undone');
+        """, fetch=True)[0]
+
+    total = fixes["total"]
+    return jsonify({
+        "devices": {"total": sum(by_status.values()), "by_status": by_status,
+                    "waiting_for_approval": by_status.get("quarantined", 0)},
+        "last_24_hours": {"anomalies": recent["anomalies"],
+                          "predictions": recent["predictions"],
+                          "alerts": recent["alerts"]},
+        "self_healing": {"actions_total": total, "actions_succeeded": fixes["succeeded"],
+                         "success_rate_percent": round(100 * fixes["succeeded"] / total, 1) if total else None,
+                         "avg_action_time_ms": fixes["avg_ms"]},
+    })
 
 
 @app.route("/api/actions/<int:action_id>/undo", methods=["POST"])
@@ -923,4 +1174,5 @@ def list_blocked():
 # RUN
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
+    print("Database driver in use:", DRIVER)
     app.run(host="0.0.0.0", port=5000, debug=True)
